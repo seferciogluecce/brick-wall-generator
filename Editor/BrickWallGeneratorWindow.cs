@@ -10,6 +10,8 @@ internal sealed class BrickWallGeneratorWindow : EditorWindow
     private const string MenuPath = "Tools/Brick Wall Generator";
     private const string WindowTitle = "Brick Wall Generator";
     private const string DefaultWallName = "Brick Wall";
+    private const string SummaryText = "Generate a configurable brick wall within the assigned bounds.";
+    private const string AssignBoundsObjectMessage = "Assign a Bounds Object.";
     private const float MinimumDimension = 0.0001f;
 
     private GameObject boundsObject;
@@ -25,7 +27,7 @@ internal sealed class BrickWallGeneratorWindow : EditorWindow
     private bool addColliders = true;
     private bool hideBoundsObject = true;
 
-    private StatusMessage status = StatusMessage.Info("Assign a Bounds Object.");
+    private StatusMessage status = StatusMessage.Info(AssignBoundsObjectMessage);
     private bool hasSuccessStatus;
 
     [MenuItem(MenuPath, false, 222)]
@@ -54,6 +56,9 @@ internal sealed class BrickWallGeneratorWindow : EditorWindow
 
     private void OnGUI()
     {
+        EditorGUILayout.LabelField(SummaryText, EditorStyles.wordWrappedMiniLabel);
+        EditorGUILayout.Space(4f);
+
         EditorGUI.BeginChangeCheck();
 
         DrawBoundsSection();
@@ -87,7 +92,7 @@ internal sealed class BrickWallGeneratorWindow : EditorWindow
         EditorGUILayout.LabelField("Bounds", EditorStyles.boldLabel);
 
         boundsObject = (GameObject)EditorGUILayout.ObjectField(
-            new GUIContent("Bounds Object", "Scene object whose direct MeshRenderer bounds define the generated wall volume."),
+            new GUIContent("Bounds Object", "Scene object whose direct MeshRenderer bounds define the wall volume, orientation, depth, and fallback material."),
             boundsObject,
             typeof(GameObject),
             true);
@@ -107,21 +112,21 @@ internal sealed class BrickWallGeneratorWindow : EditorWindow
     {
         EditorGUILayout.LabelField("Layout", EditorStyles.boldLabel);
 
-        columns = EditorGUILayout.IntSlider(new GUIContent("Columns"), columns, 1, 64);
-        rows = EditorGUILayout.IntSlider(new GUIContent("Rows"), rows, 1, 64);
-        horizontalGap = Mathf.Max(0f, EditorGUILayout.FloatField(new GUIContent("Horizontal Gap", "Gap between bricks in Unity units."), horizontalGap));
-        verticalGap = Mathf.Max(0f, EditorGUILayout.FloatField(new GUIContent("Vertical Gap", "Gap between rows in Unity units."), verticalGap));
-        shiftAlternateRows = EditorGUILayout.Toggle("Shift Alternate Rows", shiftAlternateRows);
+        columns = EditorGUILayout.IntSlider(new GUIContent("Columns", "Base number of bricks across each unshifted row. Shifted edge bricks may change the final brick count."), columns, 1, 64);
+        rows = EditorGUILayout.IntSlider(new GUIContent("Rows", "Number of brick rows within the bounds. Alternate-row shifting is disabled when there is only one row."), rows, 1, 64);
+        horizontalGap = Mathf.Max(0f, EditorGUILayout.FloatField(new GUIContent("Horizontal Gap", "Horizontal space between base columns. The wall width stays fixed, so larger gaps shrink bricks."), horizontalGap));
+        verticalGap = Mathf.Max(0f, EditorGUILayout.FloatField(new GUIContent("Vertical Gap", "Vertical space between rows. The wall height stays fixed, so larger gaps shrink bricks."), verticalGap));
+        shiftAlternateRows = EditorGUILayout.Toggle(new GUIContent("Shift Alternate Rows", "Offset every other row in positive local X to create a staggered brick pattern."), shiftAlternateRows);
 
         bool canShift = shiftAlternateRows && rows >= 2;
         using (new EditorGUI.DisabledScope(!canShift))
         {
-            shiftAmount = EditorGUILayout.Slider(new GUIContent("Shift Amount", "Percentage of the horizontal brick pitch used to offset alternate rows."), shiftAmount, 0f, 1f);
+            shiftAmount = EditorGUILayout.Slider(new GUIContent("Shift Amount", "Percentage of the horizontal brick pitch used to offset shifted rows."), shiftAmount, 0f, 1f);
         }
 
         using (new EditorGUI.DisabledScope(!canShift || shiftAmount <= MinimumDimension))
         {
-            fillShiftedEnds = EditorGUILayout.Toggle("Fill Shifted Ends", fillShiftedEnds);
+            fillShiftedEnds = EditorGUILayout.Toggle(new GUIContent("Fill Shifted Ends", "Add clipped partial bricks at shifted row edges so the row fills the bounds without extending outside."), fillShiftedEnds);
         }
     }
 
@@ -129,14 +134,20 @@ internal sealed class BrickWallGeneratorWindow : EditorWindow
     {
         EditorGUILayout.LabelField("Output", EditorStyles.boldLabel);
 
-        wallName = EditorGUILayout.TextField("Wall Name", wallName);
-        materialOverride = (Material)EditorGUILayout.ObjectField("Material (Optional)", materialOverride, typeof(Material), false);
-        addColliders = EditorGUILayout.Toggle("Add Colliders", addColliders);
-        hideBoundsObject = EditorGUILayout.Toggle("Hide Bounds Object", hideBoundsObject);
+        wallName = EditorGUILayout.TextField(new GUIContent("Wall Name", "Name for the generated wall parent. Empty names fall back to Brick Wall and duplicates are made unique."), wallName);
+        materialOverride = (Material)EditorGUILayout.ObjectField(new GUIContent("Material (Optional)", "Material applied to all generated bricks. If empty, the Bounds Object's first direct renderer material is used."), materialOverride, typeof(Material), false);
+        addColliders = EditorGUILayout.Toggle(new GUIContent("Add Colliders", "Keep one BoxCollider on each generated brick. Turn off to create render-only bricks."), addColliders);
+        hideBoundsObject = EditorGUILayout.Toggle(new GUIContent("Hide Bounds Object", "Deactivate the Bounds Object after a successful generation. Undo restores its previous active state."), hideBoundsObject);
     }
 
     private static void DrawStatus(StatusMessage message)
     {
+        if (message.Severity == StatusSeverity.Info && message.Text == AssignBoundsObjectMessage)
+        {
+            EditorGUILayout.LabelField(message.Text, EditorStyles.miniLabel);
+            return;
+        }
+
         MessageType messageType = MessageType.None;
         if (message.Severity == StatusSeverity.Info)
             messageType = MessageType.Info;
@@ -145,7 +156,21 @@ internal sealed class BrickWallGeneratorWindow : EditorWindow
         else if (message.Severity == StatusSeverity.Error)
             messageType = MessageType.Error;
 
-        EditorGUILayout.HelpBox(message.Text, messageType);
+        DrawInlineMessage(message.Text, messageType);
+    }
+
+    private static void DrawInlineMessage(string message, MessageType messageType)
+    {
+        if (string.IsNullOrEmpty(message))
+            return;
+
+        GUIStyle style = EditorStyles.wordWrappedMiniLabel;
+        if (messageType == MessageType.Warning)
+            style = EditorStyles.miniBoldLabel;
+        else if (messageType == MessageType.Error)
+            style = EditorStyles.boldLabel;
+
+        EditorGUILayout.LabelField(message, style);
     }
 
     private bool CanUseSelection()
@@ -311,7 +336,7 @@ internal sealed class BrickWallGeneratorWindow : EditorWindow
             return ValidationResult.Blocked(StatusMessage.Info("Generation is disabled in Play Mode."));
 
         if (boundsObject == null)
-            return ValidationResult.Blocked(StatusMessage.Info("Assign a Bounds Object."));
+            return ValidationResult.Blocked(StatusMessage.Info(AssignBoundsObjectMessage));
 
         if (!boundsObject.scene.IsValid())
             return ValidationResult.Blocked(StatusMessage.Warning("Bounds Object must be a scene object in the current editable context."));
